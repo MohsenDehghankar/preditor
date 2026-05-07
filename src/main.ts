@@ -77,6 +77,9 @@ type AppState = {
 }
 
 const STORAGE_KEY = 'prema_state_v1'
+let persistTimer: number | null = null
+let persistQuotaWarned = false
+let stateRecoveryNeeded = false
 
 const starterFolderId = crypto.randomUUID()
 
@@ -119,6 +122,29 @@ if (!app) {
 const state = loadState()
 
 app.innerHTML = `
+  <header class="app-topbar" data-app-topbar>
+    <div class="app-topbar-title" data-app-topbar-title></div>
+    <input id="title" type="text" hidden />
+    <div class="app-topbar-actions" data-editor-toolbar hidden>
+      <button class="btn ghost" data-action="copy-prompt" data-copy-button>Copy</button>
+      <button class="btn ghost" data-action="view-history">History</button>
+    </div>
+    <div class="app-topbar-format">
+      <div class="format-toggle">
+        <button class="btn format-btn" data-action="set-format" data-format="markdown">Markdown</button>
+        <button class="btn format-btn" data-action="set-format" data-format="latex">LaTeX</button>
+        <button class="btn format-btn" data-action="set-format" data-format="todo">Todo</button>
+      </div>
+      <div class="package-toggle" data-package-toggle hidden>
+        <div class="package-menu" data-package-menu>
+          <button class="btn package-btn" data-action="toggle-package-menu" data-package-summary aria-expanded="false">
+            packages
+          </button>
+          <div class="package-menu-list" data-package-list hidden></div>
+        </div>
+      </div>
+    </div>
+  </header>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand">
@@ -130,22 +156,21 @@ app.innerHTML = `
         </div>
       </div>
       <div class="sidebar-actions">
-        <button class="btn primary" data-action="new-prompt">New</button>
-        <button class="btn" data-action="new-folder">Folder</button>
-        <button class="btn" data-action="import-state">Import</button>
-        <button class="btn" data-action="open-export-confirm">Export</button>
+        <button class="btn primary" data-action="new-prompt">+ New</button>
+        <button class="btn" data-action="new-folder">+ Folder</button>
+        <div class="sidebar-overflow">
+          <button class="btn ghost sidebar-overflow-btn" data-action="toggle-sidebar-overflow" aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋯</button>
+          <div class="sidebar-overflow-menu" data-sidebar-overflow-menu hidden>
+            <button class="btn ghost" data-action="open-local-ai">Local AI</button>
+            <button class="btn ghost" data-action="open-type-speed">Typing Test</button>
+            <button class="btn ghost" data-action="import-state">Import</button>
+            <button class="btn ghost" data-action="open-export-confirm">Export</button>
+          </div>
+        </div>
       </div>
       <div class="sidebar-search">
         <input type="search" data-tree-search placeholder="search..." aria-label="Search files and folders" />
         <button class="search-clear-btn" data-action="clear-tree-search" type="button" aria-label="Clear search" hidden></button>
-      </div>
-      <div class="sidebar-icons" aria-label="Quick actions">
-        <button class="icon-btn" data-action="new-folder" aria-label="New folder">
-          <span class="icon folder"></span>
-        </button>
-        <button class="icon-btn" data-action="new-prompt" aria-label="New prompt">
-          <span class="icon prompt"></span>
-        </button>
       </div>
       <div class="tree" data-tree></div>
       <button
@@ -159,26 +184,6 @@ app.innerHTML = `
     </aside>
 
     <main class="editor">
-      <div class="editor-header">
-        <div class="field">
-          <input id="title" type="text" placeholder="Untitled" />
-        </div>
-        <div class="editor-actions">
-          <div class="format-toggle">
-            <button class="btn format-btn" data-action="set-format" data-format="markdown">Markdown</button>
-            <button class="btn format-btn" data-action="set-format" data-format="latex">LaTeX</button>
-            <button class="btn format-btn" data-action="set-format" data-format="todo">Todo</button>
-          </div>
-          <div class="package-toggle" data-package-toggle hidden>
-            <div class="package-menu" data-package-menu>
-              <button class="btn package-btn" data-action="toggle-package-menu" data-package-summary aria-expanded="false">
-                Select packages
-              </button>
-              <div class="package-menu-list" data-package-list hidden></div>
-            </div>
-          </div>
-        </div>
-      </div>
       <div class="editor-body">
         <div class="editor-search" data-editor-search hidden>
           <input
@@ -220,22 +225,7 @@ app.innerHTML = `
           </span>
           <span>Preview</span>
         </h2>
-        <div class="preview-actions">
-          <button class="btn preview-btn" data-action="open-local-ai">Local AI</button>
-          <button class="btn preview-btn" data-action="open-type-speed">Typing Test!</button>
-          <button class="btn preview-btn" data-action="copy-prompt" data-copy-button>Copy</button>
-          <button class="btn preview-btn sync-drive-btn" data-action="sync-drive" aria-label="Sync with Google Drive" title="Sync with Google Drive">
-            <span class="sync-drive-icon" aria-hidden="true">
-              <img
-                class="sync-drive-logo"
-                src="https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_48dp.png"
-                alt=""
-                referrerpolicy="no-referrer"
-              />
-              <span class="sync-drive-status-dot"></span>
-            </span>
-          </button>
-        </div>
+        <div class="preview-actions"></div>
       </div>
       <div class="preview-body" data-preview-body></div>
     </section>
@@ -243,7 +233,6 @@ app.innerHTML = `
     <div class="editor-footer">
       <div class="meta" data-meta>
         <span data-created></span>
-        <button class="btn ghost" data-action="view-history">History</button>
       </div>
       <div class="footer-toggles">
         <button class="toggle-chip" data-action="toggle-preview" data-toggle-chip="preview" aria-pressed="true">
@@ -255,6 +244,17 @@ app.innerHTML = `
           <span class="toggle-chip-dot" aria-hidden="true"></span>
           <span class="toggle-chip-label">Theme</span>
           <span class="toggle-chip-value">Light</span>
+        </button>
+        <button class="btn sync-drive-btn" data-action="sync-drive" aria-label="Sync with Google Drive" title="Sync with Google Drive">
+          <span class="sync-drive-icon" aria-hidden="true">
+            <img
+              class="sync-drive-logo"
+              src="https://ssl.gstatic.com/images/branding/product/1x/drive_2020q4_48dp.png"
+              alt=""
+              referrerpolicy="no-referrer"
+            />
+            <span class="sync-drive-status-dot"></span>
+          </span>
         </button>
       </div>
     </div>
@@ -430,6 +430,10 @@ const editorHighlightLayer = app.querySelector<HTMLDivElement>('[data-editor-hig
 const confirmDeletePanel = app.querySelector<HTMLDivElement>('[data-confirm-delete]')!
 const confirmDeleteCopy = app.querySelector<HTMLParagraphElement>('[data-confirm-copy]')!
 const confirmExportPanel = app.querySelector<HTMLDivElement>('[data-confirm-export]')!
+const sidebarOverflowMenu = app.querySelector<HTMLDivElement>('[data-sidebar-overflow-menu]')!
+const sidebarOverflowBtn = app.querySelector<HTMLButtonElement>('[data-action="toggle-sidebar-overflow"]')!
+const editorToolbar = app.querySelector<HTMLDivElement>('[data-editor-toolbar]')!
+const topbarTitleLabel = app.querySelector<HTMLDivElement>('[data-app-topbar-title]')!
 const typeSpeedPanel = app.querySelector<HTMLDivElement>('[data-type-speed]')!
 const typeSpeedStats = app.querySelector<HTMLDivElement>('[data-type-speed-stats]')!
 const typeSpeedTarget = app.querySelector<HTMLDivElement>('[data-type-speed-target]')!
@@ -493,6 +497,8 @@ const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 const GOOGLE_DRIVE_FOLDER_NAME = 'peditor check points'
 const GOOGLE_DRIVE_CLIENT_ID_KEY = 'preditor_google_client_id'
 const GOOGLE_DRIVE_FOLDER_ID_KEY = 'preditor_google_drive_folder_id'
+const GOOGLE_DRIVE_ENABLED_KEY = 'preditor_google_drive_enabled'
+const GOOGLE_DRIVE_TOKEN_KEY = 'preditor_google_drive_token'
 const GOOGLE_DRIVE_DEFAULT_CLIENT_ID =
   '305614712721-5841fprrsct5glbd01amtrm3786o1imc.apps.googleusercontent.com'
 
@@ -552,7 +558,18 @@ syncSearchClearButton()
 initializeState()
 initializePreviewResize()
 setupDriveSync()
-render()
+try {
+  render()
+} catch (error) {
+  console.error('Initial render failed.', error)
+}
+
+window.addEventListener('beforeunload', () => {
+  persistStateNow()
+})
+window.addEventListener('pagehide', () => {
+  persistStateNow()
+})
 
 app.addEventListener('click', (event) => {
   const target = event.target as HTMLElement
@@ -581,9 +598,11 @@ app.addEventListener('click', (event) => {
       void copySelectedPrompt(actionElement as HTMLButtonElement | null)
       break
     case 'open-type-speed':
+      closeSidebarOverflow()
       void openTypeSpeed()
       break
     case 'open-local-ai':
+      closeSidebarOverflow()
       openLocalAi()
       break
     case 'close-local-ai':
@@ -632,6 +651,7 @@ app.addEventListener('click', (event) => {
       break
     case 'open-export-confirm':
       confirmExportPanel.hidden = false
+      closeSidebarOverflow()
       break
     case 'cancel-export':
       confirmExportPanel.hidden = true
@@ -678,6 +698,10 @@ app.addEventListener('click', (event) => {
       break
     case 'import-state':
       importInput.click()
+      closeSidebarOverflow()
+      break
+    case 'toggle-sidebar-overflow':
+      toggleSidebarOverflow()
       break
     case 'sync-drive':
       if (driveSyncEnabled) {
@@ -703,7 +727,15 @@ app.addEventListener('click', (event) => {
       openDeleteConfirm(actionElement?.dataset.id)
       break
     case 'select':
-      selectNode(actionElement?.dataset.id)
+      if (
+        actionElement?.dataset.id &&
+        actionElement.dataset.id === state.selectedId &&
+        target.classList.contains('tree-name')
+      ) {
+        startInlineRename(actionElement.dataset.id, target as HTMLElement)
+      } else {
+        selectNode(actionElement?.dataset.id)
+      }
       break
     default:
       break
@@ -740,6 +772,10 @@ document.addEventListener('click', (event) => {
   const target = event.target as Node
   if (!packageMenu.contains(target)) {
     closePackageMenu()
+  }
+  const overflowWrap = sidebarOverflowMenu.parentElement
+  if (overflowWrap && !overflowWrap.contains(target)) {
+    closeSidebarOverflow()
   }
 })
 
@@ -810,6 +846,15 @@ typeSpeedInput.addEventListener('keydown', (event) => {
 
   if (event.key === 'Enter') {
     event.preventDefault()
+    return
+  }
+
+  if (event.key === ' ' && typeTestSession) {
+    const targetChunk = typeTestSession.chunks[typeTestSession.currentChunkIndex] ?? ''
+    if (targetChunk && typeSpeedInput.value.length >= targetChunk.length) {
+      event.preventDefault()
+      advanceTypeSpeedChunk()
+    }
   }
 })
 
@@ -976,7 +1021,11 @@ function initializeState() {
   }
   state.latexPackages = normalizeLatexPackages(state.latexPackages)
   state.viewMode = normalizeViewMode(state.viewMode)
-  persistState()
+  if (stateRecoveryNeeded) {
+    persistStateNow()
+  } else {
+    persistState()
+  }
 }
 
 function loadState(): AppState {
@@ -985,6 +1034,8 @@ function loadState(): AppState {
   try {
     const parsed = JSON.parse(raw) as Partial<AppState> & { showPreview?: boolean }
     if (!parsed.nodes || !Array.isArray(parsed.nodes)) {
+      backupCorruptState(raw)
+      stateRecoveryNeeded = true
       return structuredClone(defaultState)
     }
     const mergedState: AppState = { ...structuredClone(defaultState), ...parsed }
@@ -994,12 +1045,43 @@ function loadState(): AppState {
     mergedState.viewMode = normalizeViewMode(mergedState.viewMode)
     return mergedState
   } catch {
+    backupCorruptState(raw)
+    stateRecoveryNeeded = true
     return structuredClone(defaultState)
   }
 }
 
+function backupCorruptState(raw: string) {
+  try {
+    const key = `${STORAGE_KEY}.broken.${Date.now()}`
+    localStorage.setItem(key, raw)
+  } catch {
+    // Ignore backup failures (likely quota); skip silently.
+  }
+}
+
 function persistState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  if (persistTimer !== null) return
+  persistTimer = window.setTimeout(() => {
+    persistTimer = null
+    persistStateNow()
+  }, 500)
+}
+
+function persistStateNow() {
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+  } catch (error) {
+    if (!persistQuotaWarned) {
+      persistQuotaWarned = true
+      console.error('Failed to persist state (likely localStorage quota exceeded).', error)
+      alert('Storage limit reached. Recent edits may not be saved locally. Consider exporting or trimming history.')
+    }
+  }
 }
 
 function setupDriveSync() {
@@ -1013,6 +1095,78 @@ function setupDriveSync() {
     if (!driveSyncEnabled || driveSyncInFlight) return
     void syncCheckpointToDrive({ source: 'auto' })
   }, 60000)
+  loadCachedGoogleToken()
+  if (localStorage.getItem(GOOGLE_DRIVE_ENABLED_KEY) === '1') {
+    void restoreDriveSession()
+  }
+}
+
+function loadCachedGoogleToken() {
+  try {
+    const raw = localStorage.getItem(GOOGLE_DRIVE_TOKEN_KEY)
+    if (!raw) return
+    const parsed = JSON.parse(raw) as { access_token?: string; expires_at?: number }
+    if (parsed.access_token && parsed.expires_at && Date.now() < parsed.expires_at - 5000) {
+      googleAccessToken = parsed.access_token
+      googleTokenExpiresAt = parsed.expires_at
+    } else {
+      localStorage.removeItem(GOOGLE_DRIVE_TOKEN_KEY)
+    }
+  } catch {
+    localStorage.removeItem(GOOGLE_DRIVE_TOKEN_KEY)
+  }
+}
+
+function saveCachedGoogleToken() {
+  if (!googleAccessToken) return
+  try {
+    localStorage.setItem(
+      GOOGLE_DRIVE_TOKEN_KEY,
+      JSON.stringify({ access_token: googleAccessToken, expires_at: googleTokenExpiresAt })
+    )
+  } catch {
+    // Ignore quota issues for the token cache.
+  }
+}
+
+async function restoreDriveSession() {
+  if (!googleAccessToken || Date.now() >= googleTokenExpiresAt - 5000) {
+    driveSyncEnabled = false
+    updateDriveConnectedUi(false)
+    return
+  }
+  driveSyncEnabled = true
+  updateDriveConnectedUi(true)
+  updateDriveSyncButton('Drive Sync On')
+  if (stateRecoveryNeeded) {
+    try {
+      await restoreLatestDriveCheckpoint()
+    } catch {
+      // Recovery best-effort; ignore failures so we don't trigger UI.
+    }
+  }
+}
+
+async function restoreLatestDriveCheckpoint() {
+  try {
+    const folderId = await ensureDriveCheckpointFolder()
+    const query = encodeURIComponent(`'${folderId}' in parents and trashed=false and mimeType='application/json'`)
+    const list = await driveApiGet<{ files?: Array<{ id: string; name: string }> }>(
+      `https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=createdTime desc&fields=files(id,name)&pageSize=1`
+    )
+    const newest = list.files?.[0]
+    if (!newest) return
+    const fileResponse = await driveApiRaw(
+      `https://www.googleapis.com/drive/v3/files/${newest.id}?alt=media`,
+      { method: 'GET' }
+    )
+    const text = await fileResponse.text()
+    importState(text)
+    stateRecoveryNeeded = false
+    console.info(`Recovered state from Drive checkpoint: ${newest.name}`)
+  } catch (error) {
+    console.error('Drive auto-recovery failed.', error)
+  }
 }
 
 async function handleDriveSyncClick() {
@@ -1062,15 +1216,17 @@ function getGoogleClientId(interactive: boolean) {
 
 async function requestGoogleAccessToken(clientId: string, interactive: boolean) {
   const google = (window as unknown as { google?: any }).google
-  const tokenResponse = await new Promise<{ access_token?: string; expires_in?: number; error?: string }>(
+  const tokenResponse = await new Promise<{ access_token?: string; expires_in?: number; error?: string; type?: string }>(
     (resolve) => {
       googleTokenClient = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: GOOGLE_DRIVE_SCOPE,
-        callback: (response: { access_token?: string; expires_in?: number; error?: string }) => resolve(response)
+        callback: (response: { access_token?: string; expires_in?: number; error?: string }) => resolve(response),
+        error_callback: (error: { type?: string; message?: string }) =>
+          resolve({ error: error?.type ?? 'auth_error' })
       })
       googleTokenClient.requestAccessToken({
-        prompt: interactive ? 'consent' : ''
+        prompt: interactive ? '' : 'none'
       })
     }
   )
@@ -1080,6 +1236,7 @@ async function requestGoogleAccessToken(clientId: string, interactive: boolean) 
   googleAccessToken = tokenResponse.access_token
   const expiresIn = tokenResponse.expires_in ?? 3600
   googleTokenExpiresAt = Date.now() + expiresIn * 1000
+  saveCachedGoogleToken()
 }
 
 async function loadGoogleIdentityScript() {
@@ -1132,6 +1289,7 @@ async function syncCheckpointToDrive(options: { source: 'manual' | 'auto' }) {
     }
     await trimOldDriveCheckpoints(folderId, 10)
     driveSyncEnabled = true
+    localStorage.setItem(GOOGLE_DRIVE_ENABLED_KEY, '1')
     updateDriveConnectedUi(true)
     updateDriveSyncButton('Synced')
     window.setTimeout(() => {
@@ -1191,6 +1349,8 @@ async function disconnectDrive() {
     googleAccessToken = null
     googleTokenExpiresAt = 0
     googleDriveFolderId = null
+    localStorage.removeItem(GOOGLE_DRIVE_ENABLED_KEY)
+    localStorage.removeItem(GOOGLE_DRIVE_TOKEN_KEY)
     updateDriveConnectedUi(false)
   }
 }
@@ -1455,6 +1615,9 @@ function isNodeVisibleInTreeSearch(node: PromptNode, searchQuery: string): boole
 
   const ownMatch = node.title.toLowerCase().includes(searchQuery)
   if (ownMatch) return true
+  if (node.type === 'prompt') {
+    return (node.content ?? '').toLowerCase().includes(searchQuery)
+  }
   if (node.type !== 'folder') return false
 
   return state.nodes
@@ -1468,6 +1631,8 @@ function renderEditor() {
   const showPackageControls = isPrompt && node?.format === 'latex'
   emptyState.hidden = Boolean(isPrompt)
   contentInput.hidden = !isPrompt
+  editorToolbar.hidden = !isPrompt
+  topbarTitleLabel.textContent = node?.title ?? ''
   titleInput.value = node?.title ?? ''
   titleInput.disabled = !node
   contentInput.value = isPrompt ? node.content ?? '' : ''
@@ -1702,7 +1867,7 @@ function initializeTodoCollapsibles(root: HTMLElement) {
         if (existingControl) {
           existingControl.replaceWith(spacer)
         } else {
-          item.insertBefore(spacer, checkbox)
+          item.prepend(spacer)
         }
       }
       return
@@ -1725,7 +1890,7 @@ function initializeTodoCollapsibles(root: HTMLElement) {
       if (existingControl) {
         existingControl.replaceWith(collapseButton)
       } else {
-        item.insertBefore(collapseButton, checkbox)
+        item.prepend(collapseButton)
       }
     }
   })
@@ -1920,14 +2085,74 @@ function createNode(type: NodeType) {
   state.nodes.push(node)
   if (type === 'prompt') {
     state.selectedId = node.id
+    if (parentId) {
+      state.expandedIds = Array.from(new Set([...state.expandedIds, parentId]))
+    }
   } else {
     state.selectedId = node.id
     state.expandedIds = Array.from(new Set([...state.expandedIds, node.id]))
   }
   persistState()
   render()
-  titleInput.focus()
-  titleInput.select()
+  scrollSelectedTreeItemIntoView()
+  if (type === 'prompt' || type === 'folder') {
+    const label = tree.querySelector<HTMLElement>(`.tree-item.active .tree-name`)
+    if (label) startInlineRename(node.id, label)
+  }
+}
+
+function startInlineRename(id: string, labelEl: HTMLElement) {
+  const node = state.nodes.find((n) => n.id === id)
+  if (!node) return
+  const input = document.createElement('input')
+  input.type = 'text'
+  input.className = 'tree-name-input'
+  input.value = node.title
+  input.spellcheck = false
+  labelEl.replaceWith(input)
+  input.focus()
+  input.select()
+  let committed = false
+  const commit = () => {
+    if (committed) return
+    committed = true
+    const next = input.value.trim()
+    if (next && next !== node.title) {
+      node.title = next
+      node.updatedAt = Date.now()
+      persistState()
+    }
+    render()
+  }
+  const cancel = () => {
+    if (committed) return
+    committed = true
+    render()
+  }
+  input.addEventListener('keydown', (event) => {
+    event.stopPropagation()
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      commit()
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      cancel()
+    }
+  })
+  input.addEventListener('blur', commit)
+  input.addEventListener('click', (event) => event.stopPropagation())
+  input.addEventListener('input', () => {
+    if (state.selectedId === id) {
+      topbarTitleLabel.textContent = input.value
+    }
+  })
+}
+
+function scrollSelectedTreeItemIntoView() {
+  const active = tree.querySelector<HTMLElement>('.tree-item.active')
+  if (active) {
+    active.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }
 }
 
 function openDeleteConfirm(id?: string) {
@@ -2283,6 +2508,17 @@ function closePackageMenu() {
   packageSummary.setAttribute('aria-expanded', 'false')
 }
 
+function toggleSidebarOverflow() {
+  const open = sidebarOverflowMenu.hidden
+  sidebarOverflowMenu.hidden = !open
+  sidebarOverflowBtn.setAttribute('aria-expanded', String(open))
+}
+
+function closeSidebarOverflow() {
+  sidebarOverflowMenu.hidden = true
+  sidebarOverflowBtn.setAttribute('aria-expanded', 'false')
+}
+
 async function copySelectedPrompt(button?: HTMLButtonElement | null) {
   const node = getSelectedNode()
   if (!node || node.type !== 'prompt') return
@@ -2603,19 +2839,26 @@ function handleTypeSpeedInput() {
   session.currentInput = sanitizedValue
   typeSpeedInput.value = sanitizedValue
 
-  if (targetChunk && sanitizedValue.length >= targetChunk.length) {
-    session.totalTypedChars += targetChunk.length
-    session.correctChars += countMatchingChars(sanitizedValue, targetChunk)
-    session.currentChunkIndex += 1
-    session.currentInput = ''
-    typeSpeedInput.value = ''
+  renderTypeSpeed()
+}
 
-    if (session.currentChunkIndex >= session.chunks.length) {
-      session.completedAt = Date.now()
-      typeSpeedInput.blur()
-    }
+function advanceTypeSpeedChunk() {
+  if (!typeTestSession) return
+  const session = typeTestSession
+  const targetChunk = session.chunks[session.currentChunkIndex] ?? ''
+  if (!targetChunk) return
+  if (session.currentInput.length < targetChunk.length) return
+
+  session.totalTypedChars += targetChunk.length
+  session.correctChars += countMatchingChars(session.currentInput, targetChunk)
+  session.currentChunkIndex += 1
+  session.currentInput = ''
+  typeSpeedInput.value = ''
+
+  if (session.currentChunkIndex >= session.chunks.length) {
+    session.completedAt = Date.now()
+    typeSpeedInput.blur()
   }
-
   renderTypeSpeed()
 }
 
@@ -2962,6 +3205,13 @@ function toggleFolder(id?: string) {
   if (set.has(id)) {
     set.delete(id)
   } else {
+    const target = state.nodes.find((node) => node.id === id)
+    if (target?.type === 'folder') {
+      const siblingIds = state.nodes
+        .filter((node) => node.type === 'folder' && node.parentId === target.parentId)
+        .map((node) => node.id)
+      siblingIds.forEach((siblingId) => set.delete(siblingId))
+    }
     set.add(id)
   }
   state.expandedIds = Array.from(set)
@@ -2983,8 +3233,27 @@ function selectNode(id?: string) {
   renderTree()
   renderPreview(getSelectedNode())
   if (selected?.type === 'prompt') {
+    if (treeSearchQuery) {
+      const titleMatch = selected.title.toLowerCase().includes(treeSearchQuery)
+      const contentMatch = (selected.content ?? '').toLowerCase().includes(treeSearchQuery)
+      if (contentMatch && !titleMatch) {
+        openEditorSearchWithQuery(treeSearchQuery)
+        return
+      }
+    }
     contentInput.focus()
   }
+}
+
+function openEditorSearchWithQuery(query: string) {
+  editorBody.classList.add('is-search-open')
+  editorSearchBar.hidden = false
+  editorSearchInput.value = query
+  editorSearchQuery = query
+  syncEditorHighlightLayer()
+  refreshEditorSearch()
+  editorSearchInput.focus()
+  editorSearchInput.select()
 }
 
 function normalizeLatexPackages(value: unknown) {
